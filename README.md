@@ -1,13 +1,5 @@
-# Linux Optimizer — Phase 10 (adaptive monitoring, controllers, telemetry, local ML, external-tool integration)
+# ML-optimizer(adaptive monitoring, controllers, telemetry, local ML, external-tool integration)
 
-**Source revision:** 0.10.1. This revision cleans up GCC 16 warning-triggering construction patterns in the optional-package privilege argv builder and workload/telemetry test fixtures; behavior is unchanged.
-
-Adaptive Linux system optimizer daemon (C++20, systemd, root): monitors the machine, classifies the
-workload, decides a profile, and (Phase 6) applies it through gated, journaled controllers.
-
-> **Controllers default to `dry-run`**: they compute and log what *would* change and write nothing.
-> Review `linux-optimizer controllers`, then set `[controllers] mode = apply` (or run
-> `sudo linux-optimizer controllers apply` for the current run only).
 
 ## Build
 
@@ -71,7 +63,7 @@ linux-optimizer status
 | `set-log-level <lvl>`, `reload-config` | root / group `linux-optimizer` | daemon-internal only |
 | `packages` | local CLI | read-only distro/package-manager report and optional packages |
 | `install sensors\|thermald` | local CLI | allowlisted optional package; interactive typed confirmation required |
-
+ 
 CLI exit codes: 0 ok, 1 daemon returned an error, 2 usage/protocol, 3 daemon unreachable.
 
 ## Monitor (Phase 2)
