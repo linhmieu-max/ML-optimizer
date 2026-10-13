@@ -1,3 +1,5 @@
+#include <unistd.h>
+
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -199,11 +201,13 @@ void test_planners() {
     d.targets.memory = policy::MemoryBias::Responsiveness;
     auto m = plan_memory(ctx(d));
     CHECK(m.size() == 1 && m[0].target == "/proc/sys/vm/swappiness" && m[0].value == "30");
+    CHECK(m[0].ceiling && m[0].numeric == 30 && m[0].allow_new_write);   // intent only: the manager never raises a lower value
     put(root / "proc/sys/vm/swappiness", "20");
-    CHECK(plan_memory(ctx(d)).empty());                     // never raises swappiness
+    CHECK(plan_memory(ctx(d)).size() == 1);                 // still DESIRED (so an owned change is not rolled back)
     put(root / "proc/sys/vm/swappiness", "60");
     d.pressure.memory = true;
-    CHECK(plan_memory(ctx(d)).empty());                     // not while memory pressure is high
+    m = plan_memory(ctx(d));
+    CHECK(m.size() == 1 && !m[0].allow_new_write);          // held under memory pressure: no new change starts
     d.pressure.memory = false;
     const auto noswap = make_caps(false);
     CHECK(plan_memory(ControlContext{root, d, noswap, limits, nullptr, false}).empty());
@@ -244,8 +248,15 @@ void test_planners() {
     CHECK(plan_runtime_pm(ctx(d, &ac, true)).empty());      // on AC
     CHECK(plan_runtime_pm(ctx(d, nullptr, true)).empty());  // unknown power source
     auto p = plan_runtime_pm(ctx(d, &bat, true));
-    CHECK(p.size() == 2 && p[0].target == "/sys/bus/pci/devices/0000:00:00.0/power/control" && p[1].target.find("0000:00:02.0") != std::string::npos);
-    CHECK(p[0].value == "auto");
+    // The bridge already at "auto" (0000:00:1c.0) stays in the desired set: it is "already set" for the manager,
+    // and a device we switched to "auto" earlier must not look abandoned. USB/audio remain excluded.
+    auto has_dev = [&](const char* dev) {
+      for (const auto& q : p)
+        if (q.target.find(dev) != std::string::npos) return true;
+      return false;
+    };
+    CHECK(p.size() == 3 && has_dev("0000:00:00.0") && has_dev("0000:00:02.0") && has_dev("0000:00:1c.0"));  // order is readdir order
+    CHECK(!p.empty() && p[0].value == "auto");
     CHECK(plan_runtime_pm(ctx(dec(Profile::Balanced), &bat, true)).empty());
   }
   CHECK(plan_uclamp(ctx(dec(Profile::Performance))).empty());
@@ -496,6 +507,279 @@ void test_manager_backoff_and_recovery() {
   CHECK(rec.ok() && rec.restored == 4 && c.v(kGpuMin) == "300" && c.v(kEpp0) == "balance_performance");
 }
 
+
+// ---------------- regression: ownership vs. pending writes (swappiness 133 <-> 30 loop) ----------------
+const std::string kSwap = "/proc/sys/vm/swappiness";
+
+policy::PolicyDecision responsive() {
+  auto d = dec(Profile::Balanced);
+  d.targets.memory = policy::MemoryBias::Responsiveness;
+  return d;
+}
+bool any_outcome(const ControlReport& rep, const std::string& needle) {
+  for (const auto& a : rep.actions)
+    if (a.outcome.find(needle) != std::string::npos) return true;
+  return false;
+}
+
+void test_swappiness_no_oscillation() {
+  const auto t0 = Clock::now();
+  {  // 133 -> 30 exactly once; unchanged policy never writes or reverts again
+    Rig r;
+    put(r.root / kSwap.substr(1), "133");
+    auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+    CHECK(rep.applied == 1 && rep.failed == 0 && r.v(kSwap) == "30");
+    for (int i = 1; i <= 10; ++i) {
+      rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(2 * i));
+      CHECK(rep.applied == 0 && rep.reverted == 0 && rep.failed == 0 && r.v(kSwap) == "30");
+    }
+    CHECK(r.mgr->totals().applied == 1 && r.mgr->totals().reverted == 0);
+    CHECK(r.rollback->outstanding_count() == 1 && r.rollback->outstanding()[0].old_value == "133");
+    // Policy leaves Responsiveness: restored once, then quiet.
+    rep = r.mgr->apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + seconds(40));
+    CHECK(rep.reverted == 1 && r.v(kSwap) == "133" && r.rollback->outstanding_count() == 0);
+    for (int i = 1; i <= 3; ++i) {
+      rep = r.mgr->apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + seconds(40 + 2 * i));
+      CHECK(rep.applied == 0 && rep.reverted == 0 && r.v(kSwap) == "133");
+    }
+  }
+  {  // already below the target and not ours: never raised, never written, nothing recorded
+    Rig r;
+    put(r.root / kSwap.substr(1), "20");
+    for (int i = 0; i < 4; ++i) {
+      auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(2 * i));
+      CHECK(rep.applied == 0 && rep.reverted == 0 && r.v(kSwap) == "20");
+    }
+    CHECK(r.rollback->outstanding_count() == 0);
+  }
+  {  // memory pressure appears and disappears: an owned value is HELD (not reverted), no new change starts under pressure
+    Rig r;
+    put(r.root / kSwap.substr(1), "133");
+    r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+    auto hi = responsive();
+    hi.pressure.memory = true;
+    for (int i = 1; i <= 3; ++i) {
+      auto rep = r.mgr->apply(hi, SafetyState::Normal, nullptr, t0 + seconds(2 * i));
+      CHECK(rep.applied == 0 && rep.reverted == 0 && r.v(kSwap) == "30");
+    }
+    for (int i = 4; i <= 6; ++i) {
+      auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(2 * i));
+      CHECK(rep.applied == 0 && rep.reverted == 0 && r.v(kSwap) == "30");
+    }
+    CHECK(r.mgr->totals().applied == 1 && r.mgr->totals().reverted == 0);
+  }
+  {  // pressure from the start: nothing is started, then it starts once when pressure clears
+    Rig r;
+    put(r.root / kSwap.substr(1), "133");
+    auto hi = responsive();
+    hi.pressure.memory = true;
+    auto rep = r.mgr->apply(hi, SafetyState::Normal, nullptr, t0);
+    CHECK(rep.applied == 0 && r.v(kSwap) == "133" && any_outcome(rep, "held"));
+    rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(2));
+    CHECK(rep.applied == 1 && r.v(kSwap) == "30");
+    rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(4));
+    CHECK(rep.applied == 0 && rep.reverted == 0);
+  }
+  {  // swap goes away while we own the value: released once (restored), no re-apply
+    Rig r;
+    put(r.root / kSwap.substr(1), "133");
+    r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+    r.caps = make_caps(false);
+    auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(2));
+    CHECK(rep.reverted == 1 && rep.applied == 0 && r.v(kSwap) == "133");
+    rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(4));
+    CHECK(rep.reverted == 0 && rep.applied == 0 && r.v(kSwap) == "133");
+  }
+  {  // no swap from the start: nothing is written
+    Rig r;
+    r.caps = make_caps(false);
+    put(r.root / kSwap.substr(1), "133");
+    auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+    CHECK(rep.applied == 0 && r.v(kSwap) == "133" && r.rollback->outstanding_count() == 0);
+  }
+}
+
+void test_swappiness_external_changes() {
+  const auto t0 = Clock::now();
+  {  // an admin RAISES it after us: we neither fight nor revert; ownership is dropped on release without a write
+    Rig r;
+    put(r.root / kSwap.substr(1), "133");
+    r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+    put(r.root / kSwap.substr(1), "100");
+    auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(2));
+    CHECK(rep.applied == 0 && any_outcome(rep, "changed externally") && r.v(kSwap) == "100");
+    rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(4));
+    CHECK(rep.applied == 0 && rep.reverted == 0 && r.v(kSwap) == "100");
+    rep = r.mgr->apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + seconds(6));
+    CHECK(r.v(kSwap) == "100" && r.rollback->outstanding_count() == 0);  // not overwritten with 133
+  }
+  {  // an admin LOWERS it below our target: goal already met, nothing is written
+    Rig r;
+    put(r.root / kSwap.substr(1), "133");
+    r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+    put(r.root / kSwap.substr(1), "10");
+    for (int i = 1; i <= 3; ++i) {
+      auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(2 * i));
+      CHECK(rep.applied == 0 && rep.reverted == 0 && r.v(kSwap) == "10");
+    }
+    r.mgr->apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + seconds(20));
+    CHECK(r.v(kSwap) == "10" && r.rollback->outstanding_count() == 0);
+  }
+}
+
+void test_swappiness_io_failures() {
+  const auto t0 = Clock::now();
+  {  // target unreadable/missing while we own it: reported as failed, the record is KEPT, no crash, no loop
+    Rig r;
+    put(r.root / kSwap.substr(1), "133");
+    r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+    fs::remove(r.root / kSwap.substr(1));
+    for (int i = 1; i <= 3; ++i) {
+      auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(2 * i));
+      CHECK(rep.applied == 0 && rep.reverted == 0 && rep.failed >= 1);
+    }
+    CHECK(r.rollback->outstanding_count() == 1);
+    // The interface reappears with our value: ownership resumes seamlessly.
+    put(r.root / kSwap.substr(1), "30");
+    auto rep = r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(10));
+    CHECK(rep.applied == 0 && rep.failed == 0 && rep.reverted == 0);
+  }
+  {  // target vanished for good and policy lets go: the record cannot be restored; it is dropped once, not retried forever
+    Rig r;
+    put(r.root / kSwap.substr(1), "133");
+    r.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+    fs::remove(r.root / kSwap.substr(1));
+    auto rep = r.mgr->apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + seconds(2));
+    CHECK(rep.failed == 0 && r.rollback->outstanding_count() == 0);
+  }
+  {  // restore keeps failing (write error): retried after a backoff, not every cycle, record kept meanwhile
+    struct FlakyWriter final : safety::StateWriter {
+      FileStateWriter inner;
+      bool fail_writes = false;
+      explicit FlakyWriter(fs::path r) : inner(std::move(r)) {}
+      Result<std::string> read(const std::string& t) override { return inner.read(t); }
+      Result<void> write(const std::string& t, const std::string& v) override {
+        if (fail_writes) return fail(make_error(Errc::Io, "injected write failure"));
+        return inner.write(t, v);
+      }
+    };
+    Rig r;
+    FlakyWriter fw(r.root);
+    safety::RollbackManager rb(std::move(*safety::RollbackJournal::open(r.state / "flaky")), fw);
+    ControlManager m(r.root, &rb, fw, r.caps, r.limits, ControlsMode::Apply, false);
+    put(r.root / kSwap.substr(1), "133");
+    m.apply(responsive(), SafetyState::Normal, nullptr, t0);
+    fw.fail_writes = true;
+    auto rep = m.apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + seconds(2));
+    CHECK(rep.failed == 1 && rb.outstanding_count() == 1);
+    rep = m.apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + seconds(4));
+    CHECK(rep.failed == 0 && any_outcome(rep, "backing off") && rb.outstanding_count() == 1);  // no retry storm
+    fw.fail_writes = false;
+    rep = m.apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + minutes(6));
+    CHECK(rep.reverted == 1 && r.v(kSwap) == "133" && rb.outstanding_count() == 0);          // restored after the backoff
+  }
+}
+
+void test_restart_with_pending_journal() {
+  const auto t0 = Clock::now();
+  Rig c;
+  put(c.root / kSwap.substr(1), "133");
+  c.mgr->apply(responsive(), SafetyState::Normal, nullptr, t0);
+  CHECK(c.v(kSwap) == "30");
+  c.mgr.reset();
+  c.rollback.reset();  // "crash" with a pending, applied record
+  safety::RollbackManager recovered(std::move(*safety::RollbackJournal::open(c.state / "j")), c.writer);
+  CHECK(recovered.outstanding_count() == 1);
+  CHECK(recovered.rollback_all("recovery after restart").restored == 1 && c.v(kSwap) == "133" && recovered.outstanding_count() == 0);
+  ControlManager again(c.root, &recovered, c.writer, c.caps, c.limits, ControlsMode::Apply, false);
+  auto rep = again.apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(5));
+  CHECK(rep.applied == 1 && c.v(kSwap) == "30");
+  for (int i = 1; i <= 5; ++i) {
+    rep = again.apply(responsive(), SafetyState::Normal, nullptr, t0 + seconds(5 + 2 * i));
+    CHECK(rep.applied == 0 && rep.reverted == 0 && c.v(kSwap) == "30");
+  }
+  CHECK(again.totals().applied == 1 && again.totals().reverted == 0);
+  {  // journaled-but-never-written (crash between journal and write): recognised as "already original", dropped once
+    Rig w;
+    put(w.root / kSwap.substr(1), "133");
+    safety::ChangeRecord rec;
+    rec.subsystem = "memory"; rec.target = kSwap; rec.old_value = "133"; rec.new_value = "30"; rec.reason = "x"; rec.policy = "P";
+    auto j = safety::RollbackJournal::open(w.state / "k");
+    CHECK(j && (*j)->begin(rec).has_value());
+    safety::RollbackManager m(std::move(*j), w.writer);
+    CHECK(m.rollback_all("recovery").skipped == 1 && m.outstanding_count() == 0 && w.v(kSwap) == "133");
+  }
+}
+
+void test_runtime_pm_no_oscillation() {
+  // Same defect class as swappiness: once a device is "auto" the planner must keep owning it.
+  const auto t0 = Clock::now();
+  Rig r;
+  r.mgr->set_runtime_pm(true);
+  const auto sys = battery_sys(false);
+  const auto d = dec(Profile::Powersave);
+  auto rep = r.mgr->apply(d, SafetyState::Normal, &sys, t0);
+  const std::string gpu = "/sys/bus/pci/devices/0000:00:02.0/power/control";
+  CHECK(r.v(gpu) == "auto");
+  const auto applied_first = r.mgr->totals().applied;
+  for (int i = 1; i <= 6; ++i) {
+    rep = r.mgr->apply(d, SafetyState::Normal, &sys, t0 + seconds(2 * i));
+    CHECK(rep.applied == 0 && rep.reverted == 0 && r.v(gpu) == "auto");
+  }
+  CHECK(r.mgr->totals().applied == applied_first && r.mgr->totals().reverted == 0);
+  // Back on AC: released once, quiet afterwards.
+  const auto ac = battery_sys(true);
+  rep = r.mgr->apply(d, SafetyState::Normal, &ac, t0 + seconds(30));
+  CHECK(rep.reverted >= 1 && r.v(gpu) == "on");
+  rep = r.mgr->apply(d, SafetyState::Normal, &ac, t0 + seconds(32));
+  CHECK(rep.reverted == 0 && rep.applied == 0 && r.v(gpu) == "on");
+}
+
+void test_thermal_flap_keeps_original() {
+  // EMERGENCY -> HOT -> EMERGENCY: restore then re-apply must still restore the ORIGINAL, never the throttled value.
+  const auto t0 = Clock::now();
+  Rig r;
+  r.mgr->apply(ControlManager::emergency_decision(), SafetyState::Emergency, nullptr, t0);
+  CHECK(r.v(kMax0) == "2200000" && r.v(kTurbo) == "1");
+  auto back = r.mgr->apply(dec(Profile::Balanced), SafetyState::Hot, nullptr, t0 + seconds(5));
+  CHECK(back.reverted >= 1);
+  r.mgr->apply(ControlManager::emergency_decision(), SafetyState::Emergency, nullptr, t0 + seconds(10));
+  CHECK(r.v(kMax0) == "2200000");
+  for (const auto& o : r.rollback->outstanding())
+    if (o.target == kMax0) CHECK(o.old_value == "4400000");
+  // External change during the emergency is respected on recovery.
+  put(r.root / kMax0.substr(1), "1800000");
+  r.mgr->apply(dec(Profile::Balanced), SafetyState::Normal, nullptr, t0 + seconds(20));
+  CHECK(r.v(kMax0) == "1800000" && r.v("/sys/devices/system/cpu/cpufreq/policy1/scaling_max_freq") == "4400000");
+  CHECK(r.rollback->outstanding_count() == 0);
+}
+
+void test_duplicate_desired() {
+  std::vector<Desired> want;
+  auto mk = [](const char* ctl, const char* val, bool safety) {
+    Desired d;
+    d.controller = ctl; d.target = "/proc/sys/vm/swappiness"; d.value = val; d.safety_action = safety;
+    return d;
+  };
+  want.push_back(mk("memory", "30", false));
+  want.push_back(mk("other", "10", false));
+  std::vector<ControlAction> notes;
+  auto out = resolve_duplicate_targets(std::move(want), &notes);
+  CHECK(out.size() == 1 && out[0].controller == "memory" && notes.size() == 1 && notes[0].outcome.find("conflict") != std::string::npos);
+  want.clear();
+  want.push_back(mk("memory", "30", false));
+  want.push_back(mk("thermal", "1", true));  // a protective action always wins
+  notes.clear();
+  out = resolve_duplicate_targets(std::move(want), &notes);
+  CHECK(out.size() == 1 && out[0].controller == "thermal");
+  want.clear();
+  want.push_back(mk("a", "30", false));
+  want.push_back(mk("b", "30", false));  // same value: harmless duplicate, merged silently
+  notes.clear();
+  out = resolve_duplicate_targets(std::move(want), &notes);
+  CHECK(out.size() == 1 && notes.empty());
+}
+
 void test_config_controllers() {
   auto c = parse_config("[controllers]\nmode = apply\nruntime_pm = on\n");
   CHECK(c && c->controllers_mode == "apply" && c->runtime_pm);
@@ -519,5 +803,12 @@ void run_control_tests() {
   test_manager_modes();
   test_manager_thermal();
   test_manager_backoff_and_recovery();
+  test_swappiness_no_oscillation();
+  test_swappiness_external_changes();
+  test_swappiness_io_failures();
+  test_restart_with_pending_journal();
+  test_runtime_pm_no_oscillation();
+  test_thermal_flap_keeps_original();
+  test_duplicate_desired();
   test_config_controllers();
 }

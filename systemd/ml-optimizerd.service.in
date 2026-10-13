@@ -1,0 +1,41 @@
+[Unit]
+Description=ML Optimizer adaptive daemon
+Documentation=man:ml-optimizer(1)
+After=local-fs.target
+# Existing optimizers are detected and reported, never stopped automatically.
+
+[Service]
+Type=notify
+ExecStart=@CMAKE_INSTALL_FULL_SBINDIR@/ml-optimizerd --config @OPT_DEFAULT_CONFIG@
+Restart=on-failure
+RestartSec=2
+WatchdogSec=30
+TimeoutStopSec=15
+
+# /run/ml-optimizer (0755, contains control.sock) and /var/lib/ml-optimizer
+# (0750, will hold the rollback journal and telemetry DB) are managed by systemd.
+RuntimeDirectory=ml-optimizer
+RuntimeDirectoryMode=0755
+StateDirectory=ml-optimizer
+StateDirectoryMode=0750
+
+# Sandboxing. Phase 1 needs no writes outside its own directories.
+# Phase 6 will open explicit ReadWritePaths= for the sysfs/cgroup controllers.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

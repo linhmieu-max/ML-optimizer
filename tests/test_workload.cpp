@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <fstream>
+#include <memory>
 
 #include "check.hpp"
 #include "core/config.hpp"
@@ -85,15 +86,15 @@ void test_scanner() {
 // ---------- classifier scenarios on synthetic snapshots ----------
 struct World {
   ProcessSnapshot ps;
-  monitor::SystemSnapshot sys;
+  std::unique_ptr<monitor::SystemSnapshot> sys = std::make_unique<monitor::SystemSnapshot>();
   int next = 100;
 
   World(double cpu_util = 10) {
-    sys.cpu = monitor::CpuSample{};
-    sys.cpu->utilization_pct = cpu_util;
-    sys.memory = monitor::MemorySample{};
-    sys.memory->total_kb = 8000000;
-    sys.memory->available_kb = 5000000;
+    sys->cpu = monitor::CpuSample{};
+    sys->cpu->utilization_pct = cpu_util;
+    sys->memory = monitor::MemorySample{};
+    sys->memory->total_kb = 8000000;
+    sys->memory->available_kb = 5000000;
   }
   ProcessInfo& add(const std::string& comm, double cpu, const std::string& cgroup = "0::/user.slice/app.scope",
                    int ppid = 1, unsigned flags = 0, std::uint64_t rss_kb = 100000) {
@@ -110,21 +111,21 @@ struct World {
     return ps.procs.back();
   }
   void gpu(double busy) {
-    sys.gpu = monitor::GpuSample{};
+    sys->gpu = monitor::GpuSample{};
     monitor::GpuDevice g;
     g.card = "card0";
     g.driver = "i915";
     g.busy_pct = busy;
-    sys.gpu->devices.push_back(g);
+    sys->gpu->devices.push_back(g);
   }
   void io(double read_mbps, double write_mbps) {
-    sys.io.emplace();
-    sys.io->total_read_bps = read_mbps * 1e6;
-    sys.io->total_write_bps = write_mbps * 1e6;
+    sys->io.emplace();
+    sys->io->total_read_bps = read_mbps * 1e6;
+    sys->io->total_write_bps = write_mbps * 1e6;
   }
   DetectContext ctx() {
     ps.finalize();
-    return DetectContext{ps, &sys};
+    return DetectContext{ps, sys.get()};
   }
 };
 
@@ -175,7 +176,7 @@ void test_game_rules() {
   }
   {  // Heavy app + lots of RAM + busy GPU, no launcher/markers: NOT a game, but flagged
     World w(60); w.add("someapp", 120, "0::/user.slice/app.scope", 1, 0, 6u * 1024 * 1024); w.gpu(75);
-    w.sys.memory->available_kb = 600000;
+    w.sys->memory->available_kb = 600000;
     Classifier c({0.35, 0.15, 1}); auto& r = c.evaluate(w.ctx());
     CHECK(r.cls != WorkloadClass::Game);
     CHECK((r.flags & kLatencySensitive) && (r.flags & kResourceHeavy));
@@ -189,7 +190,7 @@ void test_flags() {
   World w(80); w.add("gnome-shell", 5);
   Classifier c; auto& r = c.evaluate(w.ctx());
   CHECK((r.flags & kHighLoad) && !(r.flags & kResourceHeavy) && flags_to_string(r.flags) == "HIGH_LOAD");
-  World m(10); m.sys.memory->available_kb = 400000;  // 95 % used
+  World m(10); m.sys->memory->available_kb = 400000;  // 95 % used
   Classifier c2; CHECK(c2.evaluate(m.ctx()).flags & kResourceHeavy);
   CHECK(flags_to_string(0) == "none");
 }
