@@ -1,8 +1,8 @@
-# Linux Optimizer
+# ML-Optimizer
 
 An adaptive power and performance daemon for Linux, written in C++20.
 
-`linux-optimizerd` runs as a systemd service. It watches the machine, works out what you are doing
+`ML-optimizerd` runs as a systemd service. It watches the machine, works out what you are doing
 (idle, browsing, gaming, compiling, ...), picks a profile, and can apply it through a small set of
 gated, journaled controllers. Every change it makes can be undone, and thermal safety always wins.
 
@@ -54,10 +54,10 @@ cat > /tmp/opt.conf <<'CONF'
 [ipc]
 socket_path = /tmp/opt/control.sock
 CONF
-./build/linux-optimizerd --config /tmp/opt.conf --check    # validate and print capabilities
-./build/linux-optimizerd --config /tmp/opt.conf &
+./build/ML-optimizerd --config /tmp/opt.conf --check    # validate and print capabilities
+./build/ML-optimizerd --config /tmp/opt.conf &
 export LINUX_OPTIMIZER_SOCKET=/tmp/opt/control.sock
-./build/linux-optimizer status
+./build/ML-optimizer status
 ```
 
 ## Install as a service
@@ -65,20 +65,20 @@ export LINUX_OPTIMIZER_SOCKET=/tmp/opt/control.sock
 ```bash
 cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr && cmake --build build
 sudo cmake --install build
-sudo cp /etc/linux-optimizer/linux-optimizer.conf.example /etc/linux-optimizer/linux-optimizer.conf
-sudo groupadd -f linux-optimizer      # optional: members may run admin commands
+sudo cp /etc/ML-optimizer/ML-optimizer.conf.example /etc/ML-optimizer/ML-optimizer.conf
+sudo groupadd -f ML-optimizer      # optional: members may run admin commands
 sudo systemctl daemon-reload
-sudo systemctl enable --now linux-optimizerd
-linux-optimizer status
+sudo systemctl enable --now ML-optimizerd
+ML-optimizer status
 ```
 
 ### First run on real hardware
 
 1. Leave controllers in `dry-run`.
-2. Run `linux-optimizer controllers` and `linux-optimizer safety` and read what it *would* do.
+2. Run `ML-optimizer controllers` and `ML-optimizer safety` and read what it *would* do.
 3. Only then set `[controllers] mode = apply` in the config, or run
-   `sudo linux-optimizer controllers apply` for the current run only.
-4. `sudo linux-optimizer reset` rolls back every change the daemon made.
+   `sudo ML-optimizer controllers apply` for the current run only.
+4. `sudo ML-optimizer reset` rolls back every change the daemon made.
 
 ## Commands
 
@@ -148,7 +148,7 @@ A dedicated thread reads its own sensors, independent of the monitor, policy and
 
 - **Local only.** The service runs with `PrivateNetwork=yes`; nothing in the code sends data anywhere.
 - Telemetry stores numbers, workload class names and profile names. It never stores process names,
-  command lines, paths, user names or hostnames. `linux-optimizer telemetry delete --yes` removes
+  command lines, paths, user names or hostnames. `ML-optimizer telemetry delete --yes` removes
   everything and rotates the device-id salt.
 - Only the daemon runs as root. The CLI is an ordinary program talking to a Unix socket; the daemon
   authorizes **each command** by the peer's uid (`SO_PEERCRED`). Requests are strictly validated and
@@ -157,9 +157,9 @@ A dedicated thread reads its own sensors, independent of the monitor, policy and
 
 ## Configuration
 
-Copy `config/linux-optimizer.conf.example` to `/etc/linux-optimizer/linux-optimizer.conf`. The file is
+Copy `config/ML-optimizer.conf.example` to `/etc/ML-optimizer/ML-optimizer.conf`. The file is
 strict INI: unknown keys stop the daemon at startup, or keep the previous configuration on reload.
-Reload with `linux-optimizer reload-config` or `SIGHUP`.
+Reload with `ML-optimizer reload-config` or `SIGHUP`.
 
 ## Status and limitations
 
