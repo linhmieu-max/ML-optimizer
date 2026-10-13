@@ -1,6 +1,7 @@
-# ML Optimizer
+# ML Optimizer (⚠️STILL WORK IN PROCESS⚠️)
 
 An adaptive power and performance daemon for Linux, written in C++20.
+
 
 `ml-optimizerd` runs as a systemd service. It watches the machine, works out what you are doing
 (idle, browsing, gaming, compiling, ...), picks a profile, and can apply it through a small set of
