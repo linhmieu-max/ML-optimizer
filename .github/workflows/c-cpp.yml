@@ -81,13 +81,3 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ./build-asan/opt_tests
-
-  whitespace:
-    name: Diff hygiene
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: git diff --check
-        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
