@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(linux-optimizer VERSION 0.10.1 LANGUAGES CXX)
+project(ML-Optimizer VERSION 0.10.1 LANGUAGES CXX)
 
 # C++20 is the project baseline. std::expected is only used automatically when
 # the compiler is run in C++23 mode (-DCMAKE_CXX_STANDARD=23); otherwise the
@@ -15,7 +15,7 @@ endif()
 include(GNUInstallDirs)
 include(CTest)
 
-set(OPT_DEFAULT_CONFIG "/etc/linux-optimizer/linux-optimizer.conf" CACHE STRING "Config file path used by the systemd unit")
+set(OPT_DEFAULT_CONFIG "/etc/ML-Optimizer/ML-Optimizer.conf" CACHE STRING "Config file path used by the systemd unit")
 set(OPT_SYSTEMD_UNIT_DIR "/usr/lib/systemd/system" CACHE PATH "systemd system unit directory")
 
 find_package(Threads REQUIRED)
@@ -99,16 +99,16 @@ target_include_directories(opt_core SYSTEM PUBLIC third_party)
 target_link_libraries(opt_core PUBLIC Threads::Threads ${OPT_SQLITE_TARGET})
 target_compile_options(opt_core PUBLIC -Wall -Wextra -Wpedantic -Wshadow)
 
-add_executable(linux-optimizerd
+add_executable(ML-Optimizerd
   src/daemon/main.cpp
   src/daemon/daemon.cpp
   src/daemon/commands.cpp
   src/daemon/sd_notify.cpp)
-target_include_directories(linux-optimizerd PRIVATE src/daemon)
-target_link_libraries(linux-optimizerd PRIVATE opt_core)
+target_include_directories(ML-Optimizerd PRIVATE src/daemon)
+target_link_libraries(ML-Optimizerd PRIVATE opt_core)
 
-add_executable(linux-optimizer cli/main.cpp)
-target_link_libraries(linux-optimizer PRIVATE opt_core)
+add_executable(ML-Optimizer cli/main.cpp)
+target_link_libraries(ML-Optimizer PRIVATE opt_core)
 
 if(BUILD_TESTING)
   add_executable(opt_tests tests/test_main.cpp tests/test_tool_inventory.cpp tests/test_monitor.cpp tests/test_workload.cpp tests/test_policy.cpp tests/test_safety.cpp tests/test_control.cpp tests/test_telemetry.cpp tests/test_ml.cpp tests/test_adapt.cpp)
@@ -116,10 +116,10 @@ if(BUILD_TESTING)
   add_test(NAME opt_tests COMMAND opt_tests)
 endif()
 
-configure_file(systemd/linux-optimizerd.service.in ${CMAKE_BINARY_DIR}/linux-optimizerd.service @ONLY)
+configure_file(systemd/ML-Optimizerd.service.in ${CMAKE_BINARY_DIR}/ML-Optimizerd.service @ONLY)
 
-install(TARGETS linux-optimizerd RUNTIME DESTINATION ${CMAKE_INSTALL_SBINDIR})
-install(TARGETS linux-optimizer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES ${CMAKE_BINARY_DIR}/linux-optimizerd.service DESTINATION ${OPT_SYSTEMD_UNIT_DIR})
+install(TARGETS ML-Optimizerd RUNTIME DESTINATION ${CMAKE_INSTALL_SBINDIR})
+install(TARGETS ML-Optimizer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES ${CMAKE_BINARY_DIR}/ML-Optimizerd.service DESTINATION ${OPT_SYSTEMD_UNIT_DIR})
 # Shipped as .example so an upgrade never overwrites the admin's configuration.
-install(FILES config/linux-optimizer.conf.example DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/linux-optimizer)
+install(FILES config/ML-Optimizer.conf.example DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/ML-Optimizer)
