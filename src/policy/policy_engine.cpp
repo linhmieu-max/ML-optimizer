@@ -266,7 +266,7 @@ std::string format_decision(const PolicyDecision& d, Clock::time_point now) {
   }
   s += "Because:\n";
   for (const auto& r : d.reasons) s += "  - " + r + "\n";
-  s += "(targets are applied by the controllers according to [controllers] mode, default dry-run: see `linux-optimizer controllers`)\n";
+  s += "(targets are applied by the controllers according to [controllers] mode, default dry-run: see `ml-optimizer controllers`)\n";
   return s;
 }
 

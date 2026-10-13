@@ -7,7 +7,10 @@
 #include "control/memory.hpp"
 #include "control/runtime_pm.hpp"
 #include "control/uclamp.hpp"
+
+#include <algorithm>
 #include "core/logging.hpp"
+#include "core/sysfs.hpp"
 #include "policy/profiles.hpp"
 
 namespace opt::control {
@@ -79,7 +82,10 @@ ControlReport ControlManager::apply(const policy::PolicyDecision& d, SafetyState
     want.insert(want.end(), std::make_move_iterator(part.begin()), std::make_move_iterator(part.end()));
   }
 
+  want = resolve_duplicate_targets(std::move(want), &rep.actions);
+
   // 1. Ownership: observe-only / unavailable subsystems are not driven (safety actions excepted).
+  //    `keep` is the DESIRED set: everything policy still wants to hold, whether or not a write is needed now.
   std::vector<Desired> accepted;
   std::set<std::string> keep;
   std::set<std::string> noted;
@@ -102,10 +108,20 @@ ControlReport ControlManager::apply(const policy::PolicyDecision& d, SafetyState
     for (const auto& r : rollback_->outstanding())
       if (!keep.count(r.target)) stale.insert(r.target);
     for (const auto& target : stale) {
+      if (auto b = release_backoff_.find(target); b != release_backoff_.end() && now < b->second) {
+        rep.actions.push_back({"", target, "", "", "revert backing off: an earlier restore failed"});
+        ++rep.skipped;
+        continue;
+      }
       const auto r = rollback_->rollback_target(target, "no longer wanted by policy");
       rep.reverted += r.restored;
       rep.actions.push_back({"", target, "", "", r.restored ? "reverted to original" : (r.failed ? "revert FAILED" : "released (already original or changed by others)")});
-      if (r.failed) ++rep.failed;
+      if (r.failed) {
+        ++rep.failed;
+        release_backoff_[target] = now + kBackoff;
+      } else {
+        release_backoff_.erase(target);
+      }
     }
   }
 
@@ -138,6 +154,20 @@ ControlReport ControlManager::apply(const policy::PolicyDecision& d, SafetyState
     act.current = *cur;
     if (*cur == a.value) {
       act.outcome = "already set";
+      rep.actions.push_back(std::move(act));
+      continue;
+    }
+    if (a.ceiling && a.numeric) {
+      const auto n = sysfs::parse_u64(*cur);  // ceilings are for non-negative tunables
+      if (n && *a.numeric >= 0 && *n <= static_cast<std::uint64_t>(*a.numeric)) {
+        act.outcome = "already satisfied (" + *cur + " <= " + a.value + "); never raised";
+        rep.actions.push_back(std::move(act));
+        continue;
+      }
+    }
+    if (!a.allow_new_write) {
+      act.outcome = "held: " + a.hold_reason + "; no new change is started, existing ones are kept";
+      ++rep.skipped;
       rep.actions.push_back(std::move(act));
       continue;
     }
@@ -195,6 +225,25 @@ ControlReport ControlManager::apply(const policy::PolicyDecision& d, SafetyState
   totals_.failed += static_cast<std::uint64_t>(rep.failed);
   totals_.reverted += static_cast<std::uint64_t>(rep.reverted);
   return last_ = rep;
+}
+
+std::vector<Desired> resolve_duplicate_targets(std::vector<Desired> want, std::vector<ControlAction>* notes) {
+  std::vector<Desired> out;
+  for (auto& w : want) {
+    auto it = std::find_if(out.begin(), out.end(), [&](const Desired& o) { return o.target == w.target; });
+    if (it == out.end()) {
+      out.push_back(std::move(w));
+      continue;
+    }
+    if (it->value == w.value) continue;  // identical request: harmless
+    const bool replace = w.safety_action && !it->safety_action;
+    if (notes)
+      notes->push_back({replace ? it->controller : w.controller, w.target, "", replace ? w.value : it->value,
+                        "conflict: " + w.controller + " and " + it->controller + " request different values; " +
+                            (replace ? w.controller + " (protective action) wins" : it->controller + " keeps the target")});
+    if (replace) *it = std::move(w);
+  }
+  return out;
 }
 
 std::string format_controls(const ControlReport& r, const std::vector<safety::ChangeRecord>& outstanding) {

@@ -10,8 +10,8 @@
 namespace {
 void usage(FILE* out) {
   std::fprintf(out,
-               "linux-optimizerd %s (Phase %d)\n"
-               "usage: linux-optimizerd [--config FILE] [--check] [--version] [--help]\n"
+               "ml-optimizerd %s (Phase %d)\n"
+               "usage: ml-optimizerd [--config FILE] [--check] [--version] [--help]\n"
                "  --config FILE  configuration file (default %s)\n"
                "  --check        validate configuration, print detected capabilities, exit\n",
                opt::kVersion, opt::kCurrentPhase, opt::kDefaultConfigPath);
@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
     const char* a = argv[i];
     if (!std::strcmp(a, "--config") && i + 1 < argc) options.config_path = argv[++i];
     else if (!std::strcmp(a, "--check")) options.check_only = true;
-    else if (!std::strcmp(a, "--version")) { std::printf("linux-optimizerd %s\n", opt::kVersion); return 0; }
+    else if (!std::strcmp(a, "--version")) { std::printf("ml-optimizerd %s\n", opt::kVersion); return 0; }
     else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) { usage(stdout); return 0; }
     else { usage(stderr); return 2; }
   }

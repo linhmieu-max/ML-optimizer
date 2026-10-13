@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <initializer_list>
 #include <poll.h>
 #include <sstream>
 #include <string_view>
@@ -107,9 +108,11 @@ std::set<std::string> pacman_installed(const fs::path& local_db) {
   return out;
 }
 
-std::optional<fs::path> existing_binary(const fs::path& root, const std::vector<std::string>& paths) {
-  for (const auto& p : paths) {
-    const fs::path full = root / p;
+std::optional<fs::path> existing_binary(const fs::path& root, std::initializer_list<std::string_view> paths) {
+  // Avoid constructing a temporary vector<string> at each call site. GCC 16
+  // diagnosed that initializer-list-to-vector path as -Wfree-nonheap-object.
+  for (const auto p : paths) {
+    const fs::path full = root / std::string(p);
     struct stat st{};
     if (::stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
       return full;
@@ -121,8 +124,7 @@ std::vector<std::string> privilege_prefix(const fs::path& root) {
   std::vector<std::string> argv;
   if (::geteuid() == 0) return argv;
 
-  // Build the argument vector incrementally. This also avoids a GCC 16
-  // -Wfree-nonheap-object false positive on vector initializer-list returns.
+  // Build argv incrementally; do not return initializer-list-built vectors.
   if (auto sudo = existing_binary(root, {"usr/bin/sudo", "bin/sudo"})) {
     argv.reserve(2);
     argv.push_back(sudo->string());
@@ -197,10 +199,10 @@ PlatformInfo detect_platform(const fs::path& root) {
 std::vector<OptionalPackage> optional_packages() {
   return {
       {"sensors", "Additional hardware sensor diagnostics", "lm-sensors", "lm_sensors", "lm_sensors",
-       "Provides the `sensors` diagnostic command and extra hwmon visibility. Linux Optimizer continues to work without it.", ""},
+       "Provides the `sensors` diagnostic command and extra hwmon visibility. ML Optimizer continues to work without it.", ""},
       {"thermald", "Intel thermald service (optional)", "thermald", "thermald", "thermald",
-       "Optional thermal-management daemon; not required by Linux Optimizer or its thermal safety layer.",
-       "This daemon may overlap with existing thermal/power management. Linux Optimizer will not stop or disable either tool."},
+       "Optional thermal-management daemon; not required by ML Optimizer or its thermal safety layer.",
+       "This daemon may overlap with existing thermal/power management. ML Optimizer will not stop or disable either tool."},
   };
 }
 

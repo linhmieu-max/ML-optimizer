@@ -121,7 +121,7 @@ ipc::Response Daemon::handle(const ipc::Request& req, const ipc::PeerCred& peer)
 ipc::Response Daemon::cmd_ping(const ipc::Request&) { return ipc::ok_response("pong\n"); }
 
 ipc::Response Daemon::cmd_version(const ipc::Request&) {
-  return ipc::ok_response(std::string("linux-optimizerd ") + kVersion + "\nprotocol " +
+  return ipc::ok_response(std::string("ml-optimizerd ") + kVersion + "\nprotocol " +
                           std::to_string(kProtocolVersion) + "\nphase " + std::to_string(kCurrentPhase) + "\n");
 }
 
@@ -489,7 +489,7 @@ std::string Daemon::render_status() const {
     return label + value + "\n";
   };
   std::string s;
-  s += line("Daemon", "running - linux-optimizerd " + std::string(kVersion) + " (pid " + std::to_string(::getpid()) +
+  s += line("Daemon", "running - ml-optimizerd " + std::string(kVersion) + " (pid " + std::to_string(::getpid()) +
                           ", uptime " + std::to_string(uptime) + "s, euid " + std::to_string(::geteuid()) + ")");
   s += line("Phase", std::to_string(kCurrentPhase) + " - monitoring, policy, safety, controllers (dry-run unless [controllers] mode = apply)");
   s += line("Kernel", startup_caps_.kernel_release);

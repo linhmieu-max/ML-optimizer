@@ -1,6 +1,7 @@
 #include "safety/rollback.hpp"
 
 #include <algorithm>
+#include <cerrno>
 
 #include "core/logging.hpp"
 
@@ -79,6 +80,15 @@ RollbackReport RollbackManager::rollback_locked(const std::string* subsystem, co
     if (target && r.target != *target) continue;
     const std::string tag = "#" + std::to_string(r.id) + " " + r.target;
     auto cur = writer_.read(r.target);
+    if (!cur && cur.error().code == Errc::NotFound && cur.error().sys_errno == ENOENT) {
+      // The interface itself is gone (device removed, driver unloaded): there is nothing left to restore and
+      // the kernel recreates it with its own defaults. Drop the record instead of retrying forever.
+      (void)journal_->mark_rolled_back(r.id);
+      ++rep.skipped;
+      rep.notes.push_back(tag + ": target no longer exists, nothing to restore");
+      log::safety("rollback", "target vanished; record dropped", {{"target", r.target}, {"original", r.old_value}});
+      continue;
+    }
     if (!cur) {
       ++rep.failed;
       rep.notes.push_back(tag + ": cannot read current value (" + cur.error().message + ")");
@@ -96,7 +106,8 @@ RollbackReport RollbackManager::rollback_locked(const std::string* subsystem, co
       (void)journal_->mark_rolled_back(r.id);
       ++rep.skipped;
       rep.notes.push_back(tag + ": changed by another tool, left untouched");
-      log::safety("rollback", "target changed externally; not restoring", {{"target", r.target}});
+      log::safety("rollback", "target changed externally; not restoring",
+                  {{"target", r.target}, {"expected", r.new_value}, {"actual", *cur}, {"original", r.old_value}, {"action", "left untouched, record released"}});
       continue;
     }
     if (auto w = writer_.write(r.target, r.old_value); !w) {

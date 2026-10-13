@@ -1,0 +1,80 @@
+# ML Optimizer configuration (Phase 1).
+# Copy to /etc/ml-optimizer/ml-optimizer.conf. Unknown keys are errors.
+# Reload with `ml-optimizer reload-config` (admin) or `systemctl reload`/SIGHUP.
+
+[daemon]
+# trace | debug | info | warn | error | safety
+log_level = info
+state_dir = /var/lib/ml-optimizer
+
+[ipc]
+# Changing socket_path requires a daemon restart.
+socket_path = /run/ml-optimizer/control.sock
+# Members of this group (and root) may run admin commands. Read-only commands
+# are open to every local user.
+admin_group = ml-optimizer
+
+[monitor]
+# Sampling period of the read-only system monitor (250-60000 ms).
+interval_ms = 1000
+
+[workload]
+# How often processes are scanned and the workload re-classified (500-60000 ms).
+# Only process names are inspected; command lines are never stored.
+interval_ms = 2000
+
+[ml]
+# Optional machine-learning advisor. It only SUGGESTS: every suggestion is validated by the policy
+# engine (and the thermal safety layer, hardware limits and the change gate) and is never applied in
+# manual/locked profiles. Effective confidence = model probability x measured agreement with the rules,
+# so a new installation starts with the rules in charge.
+enabled = on
+# observe : (default) predictions and agreement statistics are recorded; nothing is applied
+# suggest : an accepted suggestion may move the AUTO profile by one step (never under thermal restriction)
+mode = observe
+min_confidence = 0.75
+# Local adaptation: fine-tunes the models on THIS machine's recorded samples, only while the machine has been
+# really idle (low CPU/GPU/PSI, cool, enough RAM, nothing interactive) for training_idle_seconds, preferably on AC.
+# It pauses at once when a workload appears and resumes from a checkpoint. An adapted model is accepted only if it
+# improves on this machine's hold-out without forgetting the base prior. Needs [telemetry] enabled (samples live there).
+training = on
+training_on_battery = off
+training_min_samples = 500
+training_interval_hours = 6
+training_idle_seconds = 60
+
+[telemetry]
+# Local-only SQLite telemetry (never uploaded; the service has no network access).
+# Only numbers, the workload class and the profile name are stored: no process names,
+# command lines, user names or hostnames. Delete it any time: `ml-optimizer telemetry delete --yes`.
+enabled = on
+interval_ms = 10000
+# Detailed rows are kept this long; hourly summaries per (workload, policy) are kept longer.
+detail_retention_days = 7
+summary_retention_days = 365
+# Hard size cap (database + WAL); the oldest detailed rows are dropped first.
+max_db_mb = 64
+
+[controllers]
+# off      : controllers never run
+# dry-run  : (default) compute and log what WOULD change; writes nothing. Review with
+#            `ml-optimizer controllers` before enabling.
+# apply    : write to /sys and /proc/sys (root only), every change journaled and gated.
+# BALANCED profile is hands-off: nothing is changed and earlier changes are restored.
+mode = dry-run
+# Opt-in runtime power management of a few PCI device classes, on battery + POWERSAVE only.
+runtime_pm = off
+
+[safety]
+# Thermal guard polling period (250-10000 ms). It runs on its own thread. The
+# thresholds themselves are not configurable: limits come from the hardware/kernel
+# and can never be relaxed.
+interval_ms = 1000
+
+[policy]
+# 1 conservative, 2 balanced, 3 aggressive (default), 4 experimental.
+# Stored only; the policy engine arrives in Phase 4. Thermal/firmware limits
+# are never bypassed at any level.
+aggressiveness = 3
+# How often the policy engine re-evaluates (500-60000 ms). Advisory until Phase 6.
+interval_ms = 2000
