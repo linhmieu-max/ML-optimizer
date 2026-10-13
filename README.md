@@ -6,8 +6,6 @@ An adaptive power and performance daemon for Linux, written in C++20.
 (idle, browsing, gaming, compiling, ...), picks a profile, and can apply it through a small set of
 gated, journaled controllers. Every change it makes can be undone, and thermal safety always wins.
 
-> **About the name.** ML Optimizer was previously called *linux-optimizer*. The rule-based engine is the core;
-> the machine-learning advisor is optional, local, and observe-only by default.
 
 **Version:** 0.10.2 &nbsp;|&nbsp; **Status:** pre-release. See [Status and limitations](#status-and-limitations).
 
